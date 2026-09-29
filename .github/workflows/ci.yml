@@ -1,0 +1,29 @@
+name: CI
+on:
+  push:
+    branches: [main]
+  pull_request:
+permissions:
+  contents: read
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  test-and-build:
+    runs-on: macos-26
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - name: Full history privacy scan
+        run: python3 scripts/check-source.py --history
+      - name: Tests and source privacy scan
+        run: bash scripts/test.sh
+      - name: Build native app
+        env:
+          BUILD_DIR: ${{ runner.temp }}/buddy-build
+        run: bash build.sh
+      - name: Shipping bundle audit
+        run: python3 scripts/check-package.py "${{ runner.temp }}/buddy-build/Codex Buddy.app"

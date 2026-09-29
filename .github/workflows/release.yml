@@ -1,0 +1,77 @@
+name: Release
+on:
+  push:
+    tags: ['v[0-9]*']
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing version tag (vX.Y.Z)
+        required: true
+        type: string
+      important:
+        description: Owner explicitly requests a dismissible major-update popup
+        required: true
+        default: false
+        type: boolean
+permissions:
+  contents: read
+concurrency:
+  group: release-${{ inputs.tag || github.ref_name }}
+  cancel-in-progress: false
+jobs:
+  build:
+    runs-on: macos-26
+    timeout-minutes: 20
+    outputs:
+      tag: ${{ steps.validate.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag || github.ref_name }}
+          persist-credentials: false
+          fetch-depth: 0
+      - id: validate
+        name: Validate release identity
+        env:
+          RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
+          EXPECTED_REPOSITORY: ${{ github.repository }}
+          IMPORTANT: ${{ inputs.important || false }}
+        run: python3 scripts/release-metadata.py
+      - name: Full history privacy scan
+        run: python3 scripts/check-source.py --history
+      - name: Tests and privacy scan
+        run: bash scripts/test.sh
+      - name: Build and package
+        env:
+          BUILD_DIR: ${{ runner.temp }}/buddy-build
+        run: bash scripts/package.sh
+      - name: Real DMG staging and tamper rejection
+        run: |
+          swiftc -module-cache-path "${{ runner.temp }}/buddy-test-modules" -swift-version 5 -framework AppKit Sources/Localization.swift Sources/UpdatePolicy.swift Sources/UpdateInstaller.swift Tests/InstallerTests.swift -o "${{ runner.temp }}/installer-tests"
+          "${{ runner.temp }}/installer-tests" dist/*.dmg
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-files
+          path: |
+            dist/*.dmg
+            dist/*.sha256
+            dist/release-notes.md
+          if-no-files-found: error
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: release-files
+          path: dist
+      - name: Create draft release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_TAG: ${{ needs.build.outputs.tag }}
+        run: |
+          gh release create "$RELEASE_TAG" dist/*.dmg dist/*.sha256 --verify-tag --draft --title "Codex Buddy $RELEASE_TAG" --notes-file dist/release-notes.md
